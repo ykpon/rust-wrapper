@@ -24,7 +24,7 @@ type Command struct {
 var rconIP, rconPort, rconPass string
 var wsRcon bool
 var stopReader chan struct{}
-var reader *bufio.Reader
+var conn *websocket.Conn
 
 func getEnv(key, fallback string) string {
 	if value, ok := os.LookupEnv(key); ok {
@@ -38,7 +38,6 @@ func main() {
 	rconPort = getEnv("RCON_PORT", "28018")
 	rconPass = getEnv("RCON_PASS", "")
 	stopReader = make(chan struct{})
-	reader = bufio.NewReader(os.Stdin)
 	cmd := exec.Command(os.Args[1], os.Args[2:]...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -54,18 +53,20 @@ func main() {
 
 	go func() {
 		for {
-			select {
-			case <-stopReader:
-				return
-			default:
-				text, _ := reader.ReadString('\n')
-				text = strings.Trim(text, "\n")
+			reader := bufio.NewReader(os.Stdin)
+			text, _ := reader.ReadString('\n')
+			text = strings.Trim(text, "\n")
+			if !wsRcon {
 				if text == "quit" {
 					cmd.Process.Signal(syscall.SIGTERM)
+					os.Exit(1)
 				} else {
 					fmt.Printf("Unable to run %s due to RCON not being connected yet\n", text)
 				}
+			} else {
+				sendRconCommand(conn, text)
 			}
+
 		}
 	}()
 
@@ -96,20 +97,19 @@ func main() {
 func handleOutput(pipe io.ReadCloser, stop chan struct{}) {
 	scanner := bufio.NewScanner(pipe)
 	for scanner.Scan() {
-		select {
-		case <-stop:
-			return
-		default:
-			if wsRcon {
-				line := scanner.Text()
-				fmt.Println(line)
+		if !wsRcon {
+			line := scanner.Text()
+			if line == "(Filename: ./Runtime/Export/Debug/Debug.bindings.h Line: 35)\n\n" {
+				continue
 			}
+			fmt.Println(line)
 		}
 	}
 }
 
 func poll() {
-	conn, _, err := websocket.DefaultDialer.Dial(fmt.Sprintf("ws://%s:%s/%s", rconIP, rconPort, rconPass), nil)
+	var err error
+	conn, _, err = websocket.DefaultDialer.Dial(fmt.Sprintf("ws://%s:%s/%s", rconIP, rconPort, rconPass), nil)
 	if err != nil {
 		fmt.Println("Waiting for RCON to come up...")
 		time.Sleep(5 * time.Second)
@@ -118,17 +118,16 @@ func poll() {
 	}
 
 	fmt.Println("Connected to RCON. Generating the map now. Please wait until the server status switches to \"Running\".")
-	sendStatus(reader, conn)
+	close(stopReader)
+	sendRconCommand(conn, "status")
 	wsRcon = true
-	// close(stopReader)
 
 	go func() {
 		for {
 			_, msg, err := conn.ReadMessage()
 			if err != nil {
 				fmt.Println("Connection to server closed.")
-				wsRcon = false
-				poll()
+				os.Exit(1)
 			}
 
 			var command Command
@@ -143,24 +142,12 @@ func poll() {
 			}
 		}
 	}()
-
-	for {
-		text, _ := reader.ReadString('\n')
-		command := Command{
-			Identifier: -1,
-			Message:    strings.Trim(text, "\n"),
-			Name:       "WebRcon",
-		}
-		jsonCommand, _ := json.Marshal(command)
-		conn.WriteMessage(websocket.TextMessage, jsonCommand)
-	}
-
 }
 
-func sendStatus(reader *bufio.Reader, conn *websocket.Conn) {
+func sendRconCommand(conn *websocket.Conn, cmd string) {
 	command := Command{
 		Identifier: -1,
-		Message:    strings.Trim("status", "\n"),
+		Message:    strings.Trim(cmd, "\n"),
 		Name:       "WebRcon",
 	}
 	jsonCommand, _ := json.Marshal(command)
