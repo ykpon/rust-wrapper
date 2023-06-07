@@ -99,9 +99,10 @@ func handleOutput(pipe io.ReadCloser, stop chan struct{}) {
 	for scanner.Scan() {
 		if !wsRcon {
 			line := scanner.Text()
-			if line == "(Filename: ./Runtime/Export/Debug/Debug.bindings.h Line: 35)\n\n" {
+			if line == "" {
 				continue
 			}
+
 			fmt.Println(line)
 		}
 	}
