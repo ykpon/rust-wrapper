@@ -15,7 +15,12 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+var quietMode bool
+
 func logMessage(source, message string) {
+	if quietMode {
+		return
+	}
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
 	fmt.Printf("[%s][%s] %s\n", timestamp, source, message)
 }
@@ -42,6 +47,8 @@ func main() {
 	rconIP = getEnv("RCON_IP", "127.0.0.1")
 	rconPort = getEnv("RCON_PORT", "28018")
 	rconPass = getEnv("RCON_PASS", "")
+	quietMode = getEnv("QUITE", "true") == "true"
+
 	stopReader = make(chan struct{})
 	cmd := exec.Command(os.Args[1], os.Args[2:]...)
 	stdout, err := cmd.StdoutPipe()
