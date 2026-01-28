@@ -1,6 +1,6 @@
 # README.md
-- en [Русский](README.md)
-- ru [English](README.en.md)
+- ru [Русский](README.md)
+- en [English](README.en.md)
 
 # Инструмент управления сервером Rust
 
