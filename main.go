@@ -33,7 +33,6 @@ type Command struct {
 
 var rconIP, rconPort, rconPass string
 var wsRcon bool
-var stopReader chan struct{}
 var conn *websocket.Conn
 
 func getEnv(key, fallback string) string {
@@ -49,7 +48,6 @@ func main() {
 	rconPass = getEnv("RCON_PASS", "")
 	quietMode = getEnv("QUITE", "true") == "true"
 
-	stopReader = make(chan struct{})
 	cmd := exec.Command(os.Args[1], os.Args[2:]...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -60,8 +58,8 @@ func main() {
 		logMessage("SYSTEM", fmt.Sprintf("an error occurred while working with the input stream: %v", err))
 	}
 
-	go handleOutput(stdout, stopReader, "STDOUT")
-	go handleOutput(stderr, stopReader, "STDERR")
+	go handleOutput(stdout, "STDOUT")
+	go handleOutput(stderr, "STDERR")
 
 	go func() {
 		scanner := bufio.NewScanner(os.Stdin)
@@ -107,16 +105,21 @@ func main() {
 	}
 }
 
-func handleOutput(pipe io.ReadCloser, stop chan struct{}, source string) {
-	scanner := bufio.NewScanner(pipe)
-	for scanner.Scan() {
-		if !wsRcon {
-			line := scanner.Text()
-			if line == "" {
-				continue
-			}
-
-			logMessage(source, line)
+func handleOutput(pipe io.Reader, source string) {
+	reader := bufio.NewReaderSize(pipe, 64*1024)
+	for {
+		line, isPrefix, err := reader.ReadLine()
+		if err != nil {
+			return
+		}
+		text := string(line)
+		// The pipe has to be drained even for very long lines, otherwise the
+		// server blocks on write. Only the beginning of such a line is printed.
+		for isPrefix && err == nil {
+			_, isPrefix, err = reader.ReadLine()
+		}
+		if text != "" && !wsRcon {
+			logMessage(source, text)
 		}
 	}
 }
@@ -132,7 +135,6 @@ func poll() {
 	}
 
 	logMessage("RCON", "Connected to RCON. Generating the map now. Please wait until the server status switches to \"Running\".")
-	close(stopReader)
 	sendRconCommand(conn, "status")
 	wsRcon = true
 
