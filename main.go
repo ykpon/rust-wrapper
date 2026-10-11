@@ -3,12 +3,15 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"os/signal"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -32,8 +35,14 @@ type Command struct {
 }
 
 var rconIP, rconPort, rconPass string
-var wsRcon bool
-var conn *websocket.Conn
+
+// rconMu guards rconConn and serializes writes to it: websocket.Conn
+// supports only one concurrent writer.
+var rconMu sync.Mutex
+var rconConn *websocket.Conn
+var rconConnected atomic.Bool
+
+var errRconNotConnected = errors.New("RCON is not connected")
 
 func getEnv(key, fallback string) string {
 	if value, ok := os.LookupEnv(key); ok {
@@ -68,15 +77,15 @@ func main() {
 			if text == "" {
 				continue
 			}
-			if !wsRcon {
+			if !rconConnected.Load() {
 				if text == "quit" {
 					cmd.Process.Signal(syscall.SIGTERM)
 					os.Exit(1)
 				} else {
 					logMessage("INPUT", fmt.Sprintf("Unable to run %s due to RCON not being connected yet", text))
 				}
-			} else {
-				sendRconCommand(conn, text)
+			} else if err := sendRconCommand(text); err != nil {
+				logMessage("INPUT", fmt.Sprintf("Failed to send %s to RCON: %v", text, err))
 			}
 		}
 	}()
@@ -118,15 +127,14 @@ func handleOutput(pipe io.Reader, source string) {
 		for isPrefix && err == nil {
 			_, isPrefix, err = reader.ReadLine()
 		}
-		if text != "" && !wsRcon {
+		if text != "" && !rconConnected.Load() {
 			logMessage(source, text)
 		}
 	}
 }
 
 func poll() {
-	var err error
-	conn, _, err = websocket.DefaultDialer.Dial(fmt.Sprintf("ws://%s:%s/%s", rconIP, rconPort, rconPass), nil)
+	conn, _, err := websocket.DefaultDialer.Dial(fmt.Sprintf("ws://%s:%s/%s", rconIP, rconPort, rconPass), nil)
 	if err != nil {
 		logMessage("RCON", "Waiting for RCON to come up...")
 		time.Sleep(5 * time.Second)
@@ -135,8 +143,8 @@ func poll() {
 	}
 
 	logMessage("RCON", "Connected to RCON. Generating the map now. Please wait until the server status switches to \"Running\".")
-	sendRconCommand(conn, "status")
-	wsRcon = true
+	setRconConn(conn)
+	sendRconCommand("status")
 
 	go func() {
 		for {
@@ -160,12 +168,24 @@ func poll() {
 	}()
 }
 
-func sendRconCommand(conn *websocket.Conn, cmd string) {
+func setRconConn(conn *websocket.Conn) {
+	rconMu.Lock()
+	rconConn = conn
+	rconMu.Unlock()
+	rconConnected.Store(conn != nil)
+}
+
+func sendRconCommand(cmd string) error {
+	rconMu.Lock()
+	defer rconMu.Unlock()
+	if rconConn == nil {
+		return errRconNotConnected
+	}
 	command := Command{
 		Identifier: -1,
 		Message:    cmd,
 		Name:       "WebRcon",
 	}
 	jsonCommand, _ := json.Marshal(command)
-	conn.WriteMessage(websocket.TextMessage, jsonCommand)
+	return rconConn.WriteMessage(websocket.TextMessage, jsonCommand)
 }
