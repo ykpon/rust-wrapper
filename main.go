@@ -67,8 +67,25 @@ func main() {
 		logMessage("SYSTEM", fmt.Sprintf("an error occurred while working with the input stream: %v", err))
 	}
 
-	go handleOutput(stdout, "STDOUT")
-	go handleOutput(stderr, "STDERR")
+	exitSignal := make(chan os.Signal, 1)
+	signal.Notify(exitSignal, syscall.SIGINT, syscall.SIGTERM)
+
+	err = cmd.Start()
+	if err != nil {
+		logMessage("SYSTEM", fmt.Sprintf("failed to start main game process: %v", err))
+		return
+	}
+
+	var output sync.WaitGroup
+	output.Add(2)
+	go func() {
+		defer output.Done()
+		handleOutput(stdout, "STDOUT")
+	}()
+	go func() {
+		defer output.Done()
+		handleOutput(stderr, "STDERR")
+	}()
 
 	go func() {
 		scanner := bufio.NewScanner(os.Stdin)
@@ -79,8 +96,8 @@ func main() {
 			}
 			if !rconConnected.Load() {
 				if text == "quit" {
+					logMessage("SYSTEM", "Received request to stop the process, stopping the game...")
 					cmd.Process.Signal(syscall.SIGTERM)
-					os.Exit(1)
 				} else {
 					logMessage("INPUT", fmt.Sprintf("Unable to run %s due to RCON not being connected yet", text))
 				}
@@ -90,23 +107,17 @@ func main() {
 		}
 	}()
 
-	exitSignal := make(chan os.Signal, 1)
-	signal.Notify(exitSignal, syscall.SIGINT, syscall.SIGTERM)
-
 	go func() {
-		<-exitSignal
-		logMessage("SYSTEM", "Received request to stop the process, stopping the game...")
-		cmd.Process.Signal(syscall.SIGTERM)
+		for range exitSignal {
+			logMessage("SYSTEM", "Received request to stop the process, stopping the game...")
+			cmd.Process.Signal(syscall.SIGTERM)
+		}
 	}()
 
-	err = cmd.Start()
-	if err != nil {
-		logMessage("SYSTEM", fmt.Sprintf("failed to start main game process: %v", err))
-		return
-	}
+	go runRcon()
 
-	poll()
-
+	// cmd.Wait closes the pipes, so all output has to be read before it.
+	output.Wait()
 	err = cmd.Wait()
 	if err != nil {
 		logMessage("SYSTEM", fmt.Sprintf("Main game process exited with error: %v", err))
@@ -133,39 +144,51 @@ func handleOutput(pipe io.Reader, source string) {
 	}
 }
 
-func poll() {
-	conn, _, err := websocket.DefaultDialer.Dial(fmt.Sprintf("ws://%s:%s/%s", rconIP, rconPort, rconPass), nil)
-	if err != nil {
-		logMessage("RCON", "Waiting for RCON to come up...")
-		time.Sleep(5 * time.Second)
-		poll()
-		return
-	}
-
-	logMessage("RCON", "Connected to RCON. Generating the map now. Please wait until the server status switches to \"Running\".")
-	setRconConn(conn)
-	sendRconCommand("status")
-
-	go func() {
-		for {
-			_, msg, err := conn.ReadMessage()
-			if err != nil {
-				logMessage("RCON", "Connection to server closed.")
-				os.Exit(1)
+// runRcon keeps a connection to RCON for as long as the wrapper runs. The
+// wrapper exits when the server process does, not when RCON goes away.
+func runRcon() {
+	rconURL := fmt.Sprintf("ws://%s:%s/%s", rconIP, rconPort, rconPass)
+	firstConnect := true
+	for {
+		conn, _, err := websocket.DefaultDialer.Dial(rconURL, nil)
+		if err != nil {
+			logMessage("RCON", "Waiting for RCON to come up...")
+		} else {
+			if firstConnect {
+				logMessage("RCON", "Connected to RCON. Generating the map now. Please wait until the server status switches to \"Running\".")
+				firstConnect = false
+			} else {
+				logMessage("RCON", "Reconnected to RCON.")
 			}
-
-			var command Command
-			err = json.Unmarshal(msg, &command)
-			if err != nil {
-				logMessage("RCON", "Error: Invalid JSON received")
-				continue
-			}
-
-			if command.Message != "" {
-				logMessage("RCON", command.Message)
-			}
+			setRconConn(conn)
+			sendRconCommand("status")
+			readRconMessages(conn)
+			setRconConn(nil)
+			conn.Close()
+			logMessage("RCON", "Connection to server closed.")
 		}
-	}()
+		time.Sleep(5 * time.Second)
+	}
+}
+
+func readRconMessages(conn *websocket.Conn) {
+	for {
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+
+		var command Command
+		err = json.Unmarshal(msg, &command)
+		if err != nil {
+			logMessage("RCON", "Error: Invalid JSON received")
+			continue
+		}
+
+		if command.Message != "" {
+			logMessage("RCON", command.Message)
+		}
+	}
 }
 
 func setRconConn(conn *websocket.Conn) {
