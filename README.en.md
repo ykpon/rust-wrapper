@@ -14,7 +14,8 @@ Uses the following environment variables for configuration:
 
 - `RCON_IP`: The IP address of the Rust server. If not specified, defaults to `127.0.0.1`.
 - `RCON_PORT`: The RCON port of the Rust server. If not specified, defaults to `28018`.
-- `RCON_PASS`: The RCON password for the Rust server. There is no default value.
+- `RCON_PASS`: The RCON password for the Rust server. There is no default value. Must not contain `#` or `%`.
+- `QUIET`: If set to `true`, only errors are printed. Defaults to `false`.
 
 ## Usage
 

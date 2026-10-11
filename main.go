@@ -25,6 +25,15 @@ func logMessage(source, message string) {
 	if quietMode {
 		return
 	}
+	printLog(source, message)
+}
+
+// logError prints the message even in quiet mode.
+func logError(source, message string) {
+	printLog(source, message)
+}
+
+func printLog(source, message string) {
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
 	fmt.Printf("[%s][%s] %s\n", timestamp, source, message)
 }
@@ -59,27 +68,28 @@ func main() {
 	rconIP := getEnv("RCON_IP", "127.0.0.1")
 	rconPort := getEnv("RCON_PORT", "28018")
 	rconPass := getEnv("RCON_PASS", "")
-	quietMode = getEnv("QUITE", "true") == "true"
+	// QUITE is the old misspelled name of QUIET.
+	quietMode = getEnv("QUIET", getEnv("QUITE", "false")) == "true"
 
 	// The password is sent as is, without escaping: it is not known whether
 	// the server unescapes it. '#' and a bare '%' can't be sent this way.
 	rconURL := fmt.Sprintf("ws://%s:%s/%s", rconIP, rconPort, rconPass)
 	if _, err := url.Parse(rconURL); err != nil || strings.Contains(rconPass, "#") {
-		logMessage("RCON", "Invalid RCON_IP, RCON_PORT or RCON_PASS (the password must not contain '#' or '%'), RCON is disabled")
+		logError("RCON", "Invalid RCON_IP, RCON_PORT or RCON_PASS (the password must not contain '#' or '%'), RCON is disabled")
 		rconURL = ""
 	} else if rconPass == "" {
-		logMessage("RCON", "RCON_PASS is not set")
+		logError("RCON", "RCON_PASS is not set")
 	}
 
 	cmd := exec.Command(os.Args[1], os.Args[2:]...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		logMessage("SYSTEM", fmt.Sprintf("an error occurred while working with the output stream: %v", err))
+		logError("SYSTEM", fmt.Sprintf("an error occurred while working with the output stream: %v", err))
 		os.Exit(1)
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		logMessage("SYSTEM", fmt.Sprintf("an error occurred while working with the error stream: %v", err))
+		logError("SYSTEM", fmt.Sprintf("an error occurred while working with the error stream: %v", err))
 		os.Exit(1)
 	}
 
@@ -88,7 +98,7 @@ func main() {
 
 	err = cmd.Start()
 	if err != nil {
-		logMessage("SYSTEM", fmt.Sprintf("failed to start main game process: %v", err))
+		logError("SYSTEM", fmt.Sprintf("failed to start main game process: %v", err))
 		os.Exit(1)
 	}
 
@@ -118,7 +128,7 @@ func main() {
 					logMessage("INPUT", fmt.Sprintf("Unable to run %s due to RCON not being connected yet", text))
 				}
 			} else if err := sendRconCommand(text); err != nil {
-				logMessage("INPUT", fmt.Sprintf("Failed to send %s to RCON: %v", text, err))
+				logError("INPUT", fmt.Sprintf("Failed to send %s to RCON: %v", text, err))
 			}
 		}
 	}()
@@ -138,7 +148,7 @@ func main() {
 	output.Wait()
 	err = cmd.Wait()
 	if err != nil {
-		logMessage("SYSTEM", fmt.Sprintf("Main game process exited with error: %v", err))
+		logError("SYSTEM", fmt.Sprintf("Main game process exited with error: %v", err))
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() > 0 {
 			os.Exit(exitErr.ExitCode())
