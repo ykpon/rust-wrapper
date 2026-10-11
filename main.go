@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -34,8 +35,6 @@ type Command struct {
 	Name       string `json:"Name"`
 }
 
-var rconIP, rconPort, rconPass string
-
 // rconMu guards rconConn and serializes writes to it: websocket.Conn
 // supports only one concurrent writer.
 var rconMu sync.Mutex
@@ -52,19 +51,36 @@ func getEnv(key, fallback string) string {
 }
 
 func main() {
-	rconIP = getEnv("RCON_IP", "127.0.0.1")
-	rconPort = getEnv("RCON_PORT", "28018")
-	rconPass = getEnv("RCON_PASS", "")
+	if len(os.Args) < 2 {
+		fmt.Fprintf(os.Stderr, "usage: %s <server executable> [args...]\n", os.Args[0])
+		os.Exit(2)
+	}
+
+	rconIP := getEnv("RCON_IP", "127.0.0.1")
+	rconPort := getEnv("RCON_PORT", "28018")
+	rconPass := getEnv("RCON_PASS", "")
 	quietMode = getEnv("QUITE", "true") == "true"
+
+	// The password is sent as is, without escaping: it is not known whether
+	// the server unescapes it. '#' and a bare '%' can't be sent this way.
+	rconURL := fmt.Sprintf("ws://%s:%s/%s", rconIP, rconPort, rconPass)
+	if _, err := url.Parse(rconURL); err != nil || strings.Contains(rconPass, "#") {
+		logMessage("RCON", "Invalid RCON_IP, RCON_PORT or RCON_PASS (the password must not contain '#' or '%'), RCON is disabled")
+		rconURL = ""
+	} else if rconPass == "" {
+		logMessage("RCON", "RCON_PASS is not set")
+	}
 
 	cmd := exec.Command(os.Args[1], os.Args[2:]...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		logMessage("SYSTEM", fmt.Sprintf("an error occurred while working with the output stream: %v", err))
+		os.Exit(1)
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		logMessage("SYSTEM", fmt.Sprintf("an error occurred while working with the input stream: %v", err))
+		logMessage("SYSTEM", fmt.Sprintf("an error occurred while working with the error stream: %v", err))
+		os.Exit(1)
 	}
 
 	exitSignal := make(chan os.Signal, 1)
@@ -73,7 +89,7 @@ func main() {
 	err = cmd.Start()
 	if err != nil {
 		logMessage("SYSTEM", fmt.Sprintf("failed to start main game process: %v", err))
-		return
+		os.Exit(1)
 	}
 
 	var output sync.WaitGroup
@@ -114,13 +130,19 @@ func main() {
 		}
 	}()
 
-	go runRcon()
+	if rconURL != "" {
+		go runRcon(rconURL)
+	}
 
 	// cmd.Wait closes the pipes, so all output has to be read before it.
 	output.Wait()
 	err = cmd.Wait()
 	if err != nil {
 		logMessage("SYSTEM", fmt.Sprintf("Main game process exited with error: %v", err))
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() > 0 {
+			os.Exit(exitErr.ExitCode())
+		}
 		os.Exit(1)
 	}
 }
@@ -146,8 +168,7 @@ func handleOutput(pipe io.Reader, source string) {
 
 // runRcon keeps a connection to RCON for as long as the wrapper runs. The
 // wrapper exits when the server process does, not when RCON goes away.
-func runRcon() {
-	rconURL := fmt.Sprintf("ws://%s:%s/%s", rconIP, rconPort, rconPass)
+func runRcon(rconURL string) {
 	firstConnect := true
 	for {
 		conn, _, err := websocket.DefaultDialer.Dial(rconURL, nil)
