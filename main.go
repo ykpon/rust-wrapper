@@ -64,10 +64,12 @@ func main() {
 	go handleOutput(stderr, stopReader, "STDERR")
 
 	go func() {
-		for {
-			reader := bufio.NewReader(os.Stdin)
-			text, _ := reader.ReadString('\n')
-			text = strings.Trim(text, "\n")
+		scanner := bufio.NewScanner(os.Stdin)
+		for scanner.Scan() {
+			text := strings.TrimSpace(scanner.Text())
+			if text == "" {
+				continue
+			}
 			if !wsRcon {
 				if text == "quit" {
 					cmd.Process.Signal(syscall.SIGTERM)
@@ -78,7 +80,6 @@ func main() {
 			} else {
 				sendRconCommand(conn, text)
 			}
-
 		}
 	}()
 
@@ -160,7 +161,7 @@ func poll() {
 func sendRconCommand(conn *websocket.Conn, cmd string) {
 	command := Command{
 		Identifier: -1,
-		Message:    strings.Trim(cmd, "\n"),
+		Message:    cmd,
 		Name:       "WebRcon",
 	}
 	jsonCommand, _ := json.Marshal(command)
